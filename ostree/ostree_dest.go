@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -70,6 +71,7 @@ type ostreeImageDestination struct {
 	digest        digest.Digest
 	signaturesLen int
 	repo          *C.struct_OstreeRepo
+	commitMutex   sync.Mutex
 }
 
 // newImageDestination returns an ImageDestination for writing to an existing ostree.
@@ -78,7 +80,7 @@ func newImageDestination(ref ostreeReference, tmpDirPath string) (types.ImageDes
 	if err := ensureDirectoryExists(tmpDirPath); err != nil {
 		return nil, err
 	}
-	return &ostreeImageDestination{ref, "", manifestSchema{}, tmpDirPath, map[string]*blobToImport{}, "", 0, nil}, nil
+	return &ostreeImageDestination{ref, "", manifestSchema{}, tmpDirPath, map[string]*blobToImport{}, "", 0, nil, sync.Mutex{}}, nil
 }
 
 // Reference returns the reference used to set up this destination.  Note that this should directly correspond to user's intent,
@@ -221,6 +223,9 @@ func fixFiles(selinuxHnd *C.struct_selabel_handle, root string, dir string, user
 }
 
 func (d *ostreeImageDestination) ostreeCommit(repo *otbuiltin.Repo, branch string, root string, metadata []string) error {
+	d.commitMutex.Lock()
+	defer d.commitMutex.Unlock()
+
 	opts := otbuiltin.NewCommitOptions()
 	opts.AddMetadataString = metadata
 	opts.Timestamp = time.Now()
@@ -300,7 +305,6 @@ func (d *ostreeImageDestination) importBlob(selinuxHnd *C.struct_selabel_handle,
 		fmt.Sprintf("docker.uncompressed_size=%d", uncompressedSize),
 		fmt.Sprintf("docker.uncompressed_digest=%s", uncompressedDigest.String()),
 		fmt.Sprintf("tarsplit.output=%s", base64.StdEncoding.EncodeToString(tarSplitOutput.Bytes()))})
-
 }
 
 func (d *ostreeImageDestination) importConfig(repo *otbuiltin.Repo, blob *blobToImport) error {
@@ -411,40 +415,69 @@ func (d *ostreeImageDestination) Commit() error {
 		defer C.selabel_close(selinuxHnd)
 	}
 
-	checkLayer := func(hash string) error {
-		blob := d.blobs[hash]
+	var wg sync.WaitGroup
+	ch := make(chan error)
+	checkLayer := func(blob *blobToImport) {
+		defer wg.Done()
+
 		// if the blob is not present in d.blobs then it is already stored in OSTree,
 		// and we don't need to import it.
 		if blob == nil {
-			return nil
+			return
 		}
 		err := d.importBlob(selinuxHnd, repo, blob)
 		if err != nil {
-			return err
+			ch <- err
+			return
 		}
-
-		delete(d.blobs, hash)
-		return nil
 	}
+
 	for _, layer := range d.schema.LayersDescriptors {
 		hash := layer.Digest.Hex()
-		if err = checkLayer(hash); err != nil {
-			return err
-		}
+		blob := d.blobs[hash]
+		wg.Add(1)
+		go checkLayer(blob)
+		delete(d.blobs, hash)
 	}
+
 	for _, layer := range d.schema.FSLayers {
 		hash := layer.BlobSum.Hex()
-		if err = checkLayer(hash); err != nil {
-			return err
-		}
+		blob := d.blobs[hash]
+		wg.Add(1)
+		go checkLayer(blob)
+		delete(d.blobs, hash)
 	}
 
 	// Import the other blobs that are not layers
 	for _, blob := range d.blobs {
-		err := d.importConfig(repo, blob)
-		if err != nil {
-			return err
+		wg.Add(1)
+		go func(blob *blobToImport) {
+			defer wg.Done()
+			err := d.importConfig(repo, blob)
+			if err != nil {
+				ch <- err
+			}
+		}(blob)
+	}
+
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+
+	err = nil
+loop:
+	for {
+		select {
+		case cerr := <-ch:
+			if cerr == nil {
+				break loop
+			}
+			err = cerr
 		}
+	}
+	if err != nil {
+		return err
 	}
 
 	manifestPath := filepath.Join(d.tmpDirPath, "manifest")
