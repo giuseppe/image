@@ -233,7 +233,16 @@ func (d *ostreeImageDestination) ostreeCommit(repo *otbuiltin.Repo, branch strin
 	return err
 }
 
-func generateTarSplitMetadata(output *bytes.Buffer, file string) (digest.Digest, int64, error) {
+type writerSize struct {
+	size int64
+}
+
+func (ws *writerSize) Write(p []byte) (n int, err error) {
+	ws.size += int64(len(p))
+	return len(p), nil
+}
+
+func extractTar(output *bytes.Buffer, file string, usermode bool, destinationPath string) (digest.Digest, int64, error) {
 	mfz := gzip.NewWriter(output)
 	defer mfz.Close()
 	metaPacker := storage.NewJSONPacker(mfz)
@@ -248,7 +257,9 @@ func generateTarSplitMetadata(output *bytes.Buffer, file string) (digest.Digest,
 	if err != nil {
 		return "", -1, err
 	}
-	defer gzReader.Close()
+	if usermode {
+		defer gzReader.Close()
+	}
 
 	its, err := asm.NewInputTarStream(gzReader, metaPacker, nil)
 	if err != nil {
@@ -257,9 +268,33 @@ func generateTarSplitMetadata(output *bytes.Buffer, file string) (digest.Digest,
 
 	digester := digest.Canonical.Digester()
 
-	written, err := io.Copy(digester.Hash(), its)
-	if err != nil {
-		return "", -1, err
+	var written int64
+	if usermode {
+		written, err = io.Copy(digester.Hash(), its)
+		if err != nil {
+			return "", -1, err
+		}
+		os.MkdirAll(destinationPath, 0755)
+		if err := exec.Command("tar", "-C", destinationPath, "--no-same-owner", "--no-same-permissions", "--delay-directory-restore", "-xf", file).Run(); err != nil {
+			return "", -1, err
+		}
+	} else {
+		archiver := archive.NewDefaultArchiver()
+		options := &archive.TarOptions{
+			UIDMaps: archiver.IDMappings.UIDs(),
+			GIDMaps: archiver.IDMappings.GIDs(),
+		}
+		ws := &writerSize{size: 0}
+		writers := io.MultiWriter(ws, digester.Hash())
+		tee := io.TeeReader(its, writers)
+		if err := archiver.Untar(tee, destinationPath, options); err != nil {
+			return "", -1, err
+		}
+		// archiver.Untar might discard the footer, ensure it is copied into writers.
+		if _, err := io.Copy(ioutil.Discard, tee); err != nil {
+			return "", -1, err
+		}
+		written = ws.size
 	}
 
 	return digester.Digest(), written, nil
@@ -276,29 +311,18 @@ func (d *ostreeImageDestination) importBlob(selinuxHnd *C.struct_selabel_handle,
 		os.RemoveAll(destinationPath)
 	}()
 
+	usermode := os.Getuid() != 0
+
 	var tarSplitOutput bytes.Buffer
-	uncompressedDigest, uncompressedSize, err := generateTarSplitMetadata(&tarSplitOutput, blob.BlobPath)
+	uncompressedDigest, uncompressedSize, err := extractTar(&tarSplitOutput, blob.BlobPath, usermode, destinationPath)
 	if err != nil {
 		return err
 	}
 
-	if os.Getuid() == 0 {
-		if err := archive.UntarPath(blob.BlobPath, destinationPath); err != nil {
-			return err
-		}
-		if err := fixFiles(selinuxHnd, destinationPath, destinationPath, false); err != nil {
-			return err
-		}
-	} else {
-		os.MkdirAll(destinationPath, 0755)
-		if err := exec.Command("tar", "-C", destinationPath, "--no-same-owner", "--no-same-permissions", "--delay-directory-restore", "-xf", blob.BlobPath).Run(); err != nil {
-			return err
-		}
-
-		if err := fixFiles(selinuxHnd, destinationPath, destinationPath, true); err != nil {
-			return err
-		}
+	if err := fixFiles(selinuxHnd, destinationPath, destinationPath, usermode); err != nil {
+		return err
 	}
+
 	return d.ostreeCommit(repo, ostreeBranch, destinationPath, []string{fmt.Sprintf("docker.size=%d", blob.Size),
 		fmt.Sprintf("docker.uncompressed_size=%d", uncompressedSize),
 		fmt.Sprintf("docker.uncompressed_digest=%s", uncompressedDigest.String()),
