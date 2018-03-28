@@ -149,9 +149,6 @@ func (d *ostreeImageDestination) PutBlob(stream io.Reader, inputInfo types.BlobI
 	if inputInfo.Size != -1 && size != inputInfo.Size {
 		return types.BlobInfo{}, errors.Errorf("Size mismatch when copying %s, expected %d, got %d", computedDigest, inputInfo.Size, size)
 	}
-	if err := blobFile.Sync(); err != nil {
-		return types.BlobInfo{}, err
-	}
 
 	hash := computedDigest.Hex()
 	d.blobs[hash] = &blobToImport{Size: size, Digest: computedDigest, BlobPath: blobPath}
@@ -229,6 +226,7 @@ func (d *ostreeImageDestination) ostreeCommit(repo *otbuiltin.Repo, branch strin
 	opts := otbuiltin.NewCommitOptions()
 	opts.AddMetadataString = metadata
 	opts.Timestamp = time.Now()
+	opts.Fsync = false
 	// OCI layers have no parent OSTree commit
 	opts.Parent = "0000000000000000000000000000000000000000000000000000000000000000"
 	_, err := repo.Commit(root, branch, opts)
