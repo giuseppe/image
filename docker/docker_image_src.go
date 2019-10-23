@@ -218,6 +218,31 @@ func (s *dockerImageSource) HasThreadSafeGetBlob() bool {
 	return true
 }
 
+
+// GetBlobAt returns a stream for the specified blob.
+func (s *dockerImageSource) GetBlobAt(ctx context.Context, info types.BlobInfo, off, size int64) (io.ReadCloser, error) {
+	headers := make(map[string][]string)
+	headers["Range"] = []string{fmt.Sprintf("bytes=%d-%d", off, off+size-1)}
+
+	if len(info.URLs) != 0 {
+		rc, _, err := s.getExternalBlob(ctx, info.URLs)
+		return rc, err
+	}
+
+	path := fmt.Sprintf(blobsPath, reference.Path(s.ref.ref), info.Digest.String())
+	logrus.Debugf("Downloading %s", path)
+
+	res, err := s.c.makeRequest(ctx, "GET", path, headers, nil, v2Auth, nil)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode != http.StatusPartialContent {
+		// print url also
+		return nil, errors.Errorf("Invalid status code returned when fetching blob %d (%s)", res.StatusCode, http.StatusText(res.StatusCode))
+	}
+	return res.Body, nil
+}
+
 // GetBlob returns a stream for the specified blob, and the blob’s size (or -1 if unknown).
 // The Digest field in BlobInfo is guaranteed to be provided, Size may be -1 and MediaType may be optionally provided.
 // May update BlobInfoCache, preferably after it knows for certain that a blob truly exists at a specific location.
@@ -228,6 +253,7 @@ func (s *dockerImageSource) GetBlob(ctx context.Context, info types.BlobInfo, ca
 
 	path := fmt.Sprintf(blobsPath, reference.Path(s.ref.ref), info.Digest.String())
 	logrus.Debugf("Downloading %s", path)
+
 	res, err := s.c.makeRequest(ctx, "GET", path, nil, nil, v2Auth, nil)
 	if err != nil {
 		return nil, 0, err

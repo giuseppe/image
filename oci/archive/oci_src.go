@@ -81,6 +81,11 @@ func (s *ociArchiveImageSource) HasThreadSafeGetBlob() bool {
 	return false
 }
 
+// GetBlobAt returns a stream for the specified blob.
+func (s *ociArchiveImageSource) GetBlobAt(ctx context.Context, blob BlobInfo, off, size int64) (io.ReadCloser, error) {
+	return nil, errors.New("Not supported")
+}
+
 // GetBlob returns a stream for the specified blob, and the blob’s size (or -1 if unknown).
 // The Digest field in BlobInfo is guaranteed to be provided, Size may be -1 and MediaType may be optionally provided.
 // May update BlobInfoCache, preferably after it knows for certain that a blob truly exists at a specific location.

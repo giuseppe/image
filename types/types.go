@@ -220,6 +220,9 @@ type ImageSource interface {
 	// The Digest field in BlobInfo is guaranteed to be provided, Size may be -1 and MediaType may be optionally provided.
 	// May update BlobInfoCache, preferably after it knows for certain that a blob truly exists at a specific location.
 	GetBlob(context.Context, BlobInfo, BlobInfoCache) (io.ReadCloser, int64, error)
+
+	// GetBlobAt returns a stream for the specified blob.
+	GetBlobAt(context.Context, BlobInfo, int64, int64) (io.ReadCloser, error)
 	// HasThreadSafeGetBlob indicates whether GetBlob can be executed concurrently.
 	HasThreadSafeGetBlob() bool
 	// GetSignatures returns the image's signatures.  It may use a remote (= slow) service.
