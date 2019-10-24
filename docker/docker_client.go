@@ -100,6 +100,8 @@ type dockerClient struct {
 	challenges         []challenge
 	supportsSignatures bool
 
+	redirects map[string]string
+
 	// Private state for setupRequestAuth (key: string, value: bearerToken)
 	tokenCache sync.Map
 	// Private state for detectProperties:
@@ -262,6 +264,7 @@ func newDockerClient(sys *types.SystemContext, registry, reference string) (*doc
 	tlsClientConfig.InsecureSkipVerify = skipVerify
 
 	return &dockerClient{
+		redirects:       make(map[string]string),
 		sys:             sys,
 		registry:        registry,
 		tlsClientConfig: tlsClientConfig,
@@ -411,6 +414,11 @@ func (c *dockerClient) makeRequest(ctx context.Context, method, path string, hea
 	}
 
 	url := fmt.Sprintf("%s://%s%s", c.scheme, c.registry, path)
+
+	if redirected, found := c.redirects[url]; found {
+		url = redirected
+	}
+
 	return c.makeRequestToResolvedURL(ctx, method, url, headers, stream, -1, auth, extraScope)
 }
 
@@ -559,8 +567,13 @@ func (c *dockerClient) detectPropertiesHelper(ctx context.Context) error {
 	}
 	tr := tlsclientconfig.NewTransport()
 	tr.TLSClientConfig = c.tlsClientConfig
-	c.client = &http.Client{Transport: tr}
-
+	c.client = &http.Client{
+		Transport: tr,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			c.redirects[via[0].URL.String()] = req.URL.String()
+			return nil
+		},
+	}
 	ping := func(scheme string) error {
 		url := fmt.Sprintf(resolvedPingV2URL, scheme, c.registry)
 		resp, err := c.makeRequestToResolvedURL(ctx, "GET", url, nil, nil, -1, noAuth, nil)
