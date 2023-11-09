@@ -57,7 +57,7 @@ func blobPipelineDetectCompressionStep(stream *sourceStream, srcInfo types.BlobI
 		decompressor: decompressor,
 	}
 	if res.isCompressed {
-		res.srcCompressorName = format.Name()
+		res.srcCompressorName = format.InternalUnstableUndocumentedMIMEQuestionMark()
 	} else {
 		res.srcCompressorName = internalblobinfocache.Uncompressed
 	}
@@ -147,7 +147,7 @@ func (ic *imageCopier) bpcCompressUncompressed(stream *sourceStream, detected bp
 			uploadedAlgorithm:      uploadedAlgorithm,
 			uploadedAnnotations:    annotations,
 			srcCompressorName:      detected.srcCompressorName,
-			uploadedCompressorName: uploadedAlgorithm.Name(),
+			uploadedCompressorName: uploadedAlgorithm.InternalUnstableUndocumentedMIMEQuestionMark(),
 			closers:                []io.Closer{reader},
 		}, nil
 	}
@@ -157,7 +157,7 @@ func (ic *imageCopier) bpcCompressUncompressed(stream *sourceStream, detected bp
 // bpcRecompressCompressed checks if we should be recompressing a compressed input to another format, and returns a *bpCompressionStepData if so.
 func (ic *imageCopier) bpcRecompressCompressed(stream *sourceStream, detected bpDetectCompressionStepData) (*bpCompressionStepData, error) {
 	if ic.c.dest.DesiredLayerCompression() == types.Compress && detected.isCompressed &&
-		ic.compressionFormat != nil && ic.compressionFormat.Name() != detected.format.Name() {
+		ic.compressionFormat != nil && ic.compressionFormat.InternalUnstableUndocumentedMIMEQuestionMark() != detected.format.InternalUnstableUndocumentedMIMEQuestionMark() {
 		// When the blob is compressed, but the desired format is different, it first needs to be decompressed and finally
 		// re-compressed using the desired format.
 		logrus.Debugf("Blob will be converted")
@@ -186,7 +186,7 @@ func (ic *imageCopier) bpcRecompressCompressed(stream *sourceStream, detected bp
 			uploadedAlgorithm:      ic.compressionFormat,
 			uploadedAnnotations:    annotations,
 			srcCompressorName:      detected.srcCompressorName,
-			uploadedCompressorName: ic.compressionFormat.Name(),
+			uploadedCompressorName: ic.compressionFormat.InternalUnstableUndocumentedMIMEQuestionMark(),
 			closers:                []io.Closer{decompressed, recompressed},
 		}, nil
 	}
